@@ -46,6 +46,35 @@ import { listUserSkills } from './user-skills';
 
 const log = createLogger('AgentSkills');
 
+function normalizeSkillFileInfo<T extends { name: string; path: string }>(info: T): T {
+  const normalizedPath = info.path.replaceAll('\\', '/');
+  const withoutTrailingSeparators = normalizedPath.replace(/\/+$/, '');
+  const separatorIndex = withoutTrailingSeparators.lastIndexOf('/');
+  const name = withoutTrailingSeparators.slice(separatorIndex + 1);
+  return { ...info, name, path: normalizedPath };
+}
+
+/**
+ * pi-agent-core 0.78.0's recursive skill loader treats environment paths as
+ * slash-separated. NodeExecutionEnv returns native backslashes on Windows,
+ * which makes ignore matching reject or skip every recursively loaded skill.
+ * Keep the compatibility shim at this boundary while the project remains on
+ * its deliberately pinned pi baseline.
+ */
+class SkillNodeExecutionEnv extends NodeExecutionEnv {
+  override async fileInfo(path: string) {
+    const result = await super.fileInfo(path);
+    return result.ok ? { ok: true as const, value: normalizeSkillFileInfo(result.value) } : result;
+  }
+
+  override async listDir(path: string, abortSignal?: AbortSignal) {
+    const result = await super.listDir(path, abortSignal);
+    return result.ok
+      ? { ok: true as const, value: result.value.map(normalizeSkillFileInfo) }
+      : result;
+  }
+}
+
 /** Where skills live. Overridable so a deployment can mount its own set. */
 export const skillsDir = agentRuntimeConfig.skillsDir;
 
@@ -139,7 +168,7 @@ async function listBuiltinSkills(): Promise<LoadedSkill[]> {
   if (builtinCache) return builtinCache;
   if (!existsSync(skillsDir)) return (builtinCache = []);
 
-  const env = new NodeExecutionEnv({ cwd: skillsDir });
+  const env = new SkillNodeExecutionEnv({ cwd: skillsDir });
   const { skills, diagnostics } = await loadSkills(env, skillsDir);
   for (const d of diagnostics) {
     log.warn(`${d.code}: ${d.message} (${d.path})`);
